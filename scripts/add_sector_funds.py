@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Attach five concrete ETF funds to every sector with return and max-drawdown metrics.
 
-Fund discovery uses Sina Finance's public ETF list, then ranks real exchange-listed
-ETFs by sector-specific aliases. Price history uses the same Tencent-backed daily
-pipeline as the sector charts. The five funds are representative examples, not
-recommendations or a performance ranking.
+Fund discovery uses one Sina Finance public ETF-universe request and ranks real
+exchange-listed ETFs by sector-specific aliases. Price history uses the same
+Tencent-backed daily pipeline as the sector charts. The five funds are
+representative examples, not recommendations or a performance ranking.
 """
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import json
 import re
-import urllib.parse
 
 from add_daily_history import fetch_daily
 from update_data import PERIODS, http_bytes, target_date
@@ -71,14 +70,13 @@ ALIASES: dict[str, list[str]] = {
     "上证50": ["上证50", "50ETF"],
     "科创板": ["科创50", "科创板", "科创"],
     "创业板": ["创业板", "创业板50", "创成长"],
-    "北证": ["北证50", "北证", "北交所"],
+    "北证": ["北证50", "北证", "北交所", "创新"],
     "恒生科技": ["恒生科技", "港股科技", "恒生互联网", "港股互联网"],
     "港股红利": ["港股红利", "恒生红利", "港股通红利", "港股央企红利", "高股息"],
     "纳斯达克": ["纳斯达克", "纳指", "NASDAQ", "纳斯达克100"],
     "标普500": ["标普500", "标普", "S&P500", "标普500ETF"],
 }
 
-# Broad but still related aliases used only if a narrow theme has fewer than five ETFs.
 FALLBACK: dict[str, list[str]] = {
     "半导体材料设备": ["芯片", "半导体"], "存储芯片": ["芯片", "半导体"],
     "AI应用": ["人工智能", "计算机"], "算力租赁": ["算力", "云计算", "通信"],
@@ -102,7 +100,6 @@ def fetch_etf_universe() -> list[dict[str, str]]:
         sm = re.search(r'(?:^|,)symbol:\"([^\"]+)\"', body)
         nm = re.search(r'(?:^|,)name:\"([^\"]+)\"', body)
         if not sm or not nm:
-            # Some responses quote object keys.
             sm = re.search(r'\"symbol\"\s*:\s*\"([^\"]+)\"', body)
             nm = re.search(r'\"name\"\s*:\s*\"([^\"]+)\"', body)
         if not sm or not nm:
@@ -110,7 +107,6 @@ def fetch_etf_universe() -> list[dict[str, str]]:
         symbol, name = sm.group(1).strip(), nm.group(1).strip()
         if re.fullmatch(r"(?:sh|sz)\d{6}", symbol) and name:
             out.append({"code": symbol, "name": name})
-    # De-duplicate while preserving list order.
     uniq: dict[str, dict[str, str]] = {}
     for x in out:
         uniq.setdefault(x["code"], x)
@@ -118,28 +114,6 @@ def fetch_etf_universe() -> list[dict[str, str]]:
     if len(rows) < 50:
         raise RuntimeError(f"新浪ETF列表解析异常，仅得到 {len(rows)} 条")
     return rows
-
-
-def suggest_etfs(keyword: str) -> list[dict[str, str]]:
-    url = "https://suggest3.sinajs.cn/suggest/type=&key=" + urllib.parse.quote(keyword)
-    try:
-        raw = http_bytes(url, timeout=8, retries=1, referer="https://finance.sina.com.cn/")
-    except Exception:
-        return []
-    text = raw.decode("gb18030", errors="ignore")
-    m = re.search(r'=\"(.*)\";?\s*$', text.strip())
-    if not m:
-        return []
-    out: list[dict[str, str]] = []
-    for rec in m.group(1).split(";"):
-        parts = rec.split(",")
-        if len(parts) < 5:
-            continue
-        symbol = parts[3].strip()
-        name = (parts[4] or parts[0]).strip()
-        if re.fullmatch(r"(?:sh|sz)\d{6}", symbol) and ("ETF" in name.upper() or "基金" in name):
-            out.append({"code": symbol, "name": name})
-    return out
 
 
 def score_name(name: str, sector: str, aliases: list[str]) -> int:
@@ -151,53 +125,39 @@ def score_name(name: str, sector: str, aliases: list[str]) -> int:
         a = alias.upper()
         if a and a in up:
             score += max(12, 60 - i * 7) + min(len(a) * 3, 18)
-    # Prefer plain long ETFs over feeder/LOF-like naming and avoid bond/currency products.
     if "ETF" in up:
         score += 8
-    for bad in ("债", "货币", "国债", "信用", "利率", "现金", "黄金股"):
-        if bad in name and sector != "黄金":
+    for bad in ("债", "货币", "国债", "信用", "利率", "现金"):
+        if bad in name:
             score -= 100
+    if sector != "黄金" and "黄金" in name:
+        score -= 30
     return score
 
 
-def choose_funds(sector: str, universe: list[dict[str, str]]) -> list[dict[str, str]]:
-    aliases = ALIASES.get(sector, [sector])
-    pool: dict[str, dict[str, str]] = {x["code"]: x for x in universe}
-    # Suggestions help very new/niche ETFs that may not appear in one Sina list response.
-    for kw in aliases[:4]:
-        for x in suggest_etfs(kw):
-            pool.setdefault(x["code"], x)
+def rank_by_aliases(sector: str, aliases: list[str], universe: list[dict[str, str]], seen: set[str]) -> list[dict[str, str]]:
     ranked = []
-    for x in pool.values():
+    for x in universe:
+        if x["code"] in seen:
+            continue
         s = score_name(x["name"], sector, aliases)
         if s > 0:
             ranked.append((s, x["name"], x))
     ranked.sort(key=lambda z: (-z[0], z[1]))
+    return [x for _, _, x in ranked]
+
+
+def choose_funds(sector: str, universe: list[dict[str, str]]) -> list[dict[str, str]]:
     chosen: list[dict[str, str]] = []
-    seen = set()
-    for _, _, x in ranked:
-        if x["code"] in seen:
-            continue
-        chosen.append(x)
-        seen.add(x["code"])
+    seen: set[str] = set()
+    for x in rank_by_aliases(sector, ALIASES.get(sector, [sector]), universe, seen):
+        chosen.append(x); seen.add(x["code"])
         if len(chosen) == 5:
             return chosen
-
-    # Broaden only within a related theme group.
-    broad = FALLBACK.get(sector, aliases)
-    more = []
-    for x in pool.values():
-        if x["code"] in seen:
-            continue
-        s = score_name(x["name"], sector, broad)
-        if s > 0:
-            more.append((s, x["name"], x))
-    more.sort(key=lambda z: (-z[0], z[1]))
-    for _, _, x in more:
-        chosen.append(x)
-        seen.add(x["code"])
+    for x in rank_by_aliases(sector, FALLBACK.get(sector, ALIASES.get(sector, [sector])), universe, seen):
+        chosen.append(x); seen.add(x["code"])
         if len(chosen) == 5:
-            break
+            return chosen
     return chosen
 
 
@@ -207,9 +167,7 @@ def period_points(points: list[tuple[date, float]], spec: tuple[str, int]) -> li
     dates = [d for d, _ in points]
     start = target_date(points[-1][0], spec)
     idx = bisect_right(dates, start) - 1
-    if idx < 0:
-        return []
-    if (start - dates[idx]).days > 16:
+    if idx < 0 or (start - dates[idx]).days > 16:
         return []
     return points[idx:]
 
@@ -220,12 +178,9 @@ def max_drawdown(points: list[tuple[date, float]]) -> float | None:
     peak = points[0][1]
     worst = 0.0
     for _, value in points:
-        if value > peak:
-            peak = value
+        peak = max(peak, value)
         if peak > 0:
-            dd = (value / peak - 1.0) * 100.0
-            if dd < worst:
-                worst = dd
+            worst = min(worst, (value / peak - 1.0) * 100.0)
     return round(worst, 2)
 
 
@@ -237,9 +192,9 @@ def metrics(points: list[tuple[date, float]]) -> tuple[dict[str, float | None], 
         if len(rows) < 2 or rows[0][1] <= 0:
             returns[label] = None
             drawdowns[label] = None
-            continue
-        returns[label] = round((rows[-1][1] / rows[0][1] - 1.0) * 100.0, 2)
-        drawdowns[label] = max_drawdown(rows)
+        else:
+            returns[label] = round((rows[-1][1] / rows[0][1] - 1.0) * 100.0, 2)
+            drawdowns[label] = max_drawdown(rows)
     return returns, drawdowns
 
 
@@ -258,7 +213,7 @@ def main() -> None:
 
     codes = sorted({x["code"] for rows in selections.values() for x in rows})
     histories: dict[str, list[tuple[date, float]] | Exception] = {}
-    with ThreadPoolExecutor(max_workers=10) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         jobs = {pool.submit(fetch_daily, code): code for code in codes}
         for fut in as_completed(jobs):
             code = jobs[fut]
@@ -270,49 +225,40 @@ def main() -> None:
 
     total_ok = 0
     exact_five = 0
+    total_rows = 0
     for item in sectors:
         name = str(item.get("name") or "")
         fund_rows = []
         for fund in selections.get(name, []):
             result = histories.get(fund["code"])
             row = {
-                "name": fund["name"],
-                "code": fund["code"],
-                "source": "腾讯财经公开K线",
-                "status": "error",
-                "returns": {label: None for label, _ in PERIODS},
-                "drawdowns": {label: None for label, _ in PERIODS},
-                "latest_date": None,
-                "start_date": None,
+                "name": fund["name"], "code": fund["code"], "source": "腾讯财经公开K线",
+                "status": "error", "returns": {label: None for label, _ in PERIODS},
+                "drawdowns": {label: None for label, _ in PERIODS}, "latest_date": None, "start_date": None,
             }
             if isinstance(result, list) and len(result) >= 2:
                 ret, dd = metrics(result)
-                row.update({
-                    "status": "ok" if any(v is not None for v in ret.values()) else "short_history",
-                    "returns": ret,
-                    "drawdowns": dd,
-                    "latest_date": result[-1][0].isoformat(),
-                    "start_date": result[0][0].isoformat(),
-                })
+                row.update({"status": "ok" if any(v is not None for v in ret.values()) else "short_history",
+                            "returns": ret, "drawdowns": dd,
+                            "latest_date": result[-1][0].isoformat(), "start_date": result[0][0].isoformat()})
                 total_ok += 1
             elif isinstance(result, Exception):
                 row["note"] = str(result)[:180]
             fund_rows.append(row)
         item["funds"] = fund_rows
+        total_rows += len(fund_rows)
         if len(fund_rows) == 5:
             exact_five += 1
 
     payload["sectors"] = sectors
     payload["funds_summary"] = {
-        "sector_count": len(sectors),
-        "sectors_with_five": exact_five,
-        "fund_rows": sum(len(x.get("funds") or []) for x in sectors),
-        "fund_rows_with_history": total_ok,
+        "sector_count": len(sectors), "sectors_with_five": exact_five,
+        "fund_rows": total_rows, "fund_rows_with_history": total_ok,
         "method": "Sina ETF universe + Tencent daily K-line; representative, not ranked recommendations",
     }
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     DATA_PATH.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"[done] sector funds: five={exact_five}/{len(sectors)} history={total_ok}/{sum(len(x.get('funds') or []) for x in sectors)} unique_codes={len(codes)}")
+    print(f"[done] sector funds: five={exact_five}/{len(sectors)} history={total_ok}/{total_rows} unique_codes={len(codes)}")
 
 
 if __name__ == "__main__":
