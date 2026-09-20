@@ -1,16 +1,6 @@
 [
-  {
-    "name": "半导体",
-    "mode": "board",
-    "aliases": ["半导体", "半导体设备"],
-    "prefer": "industry"
-  },
-  {
-    "name": "半导体材料设备",
-    "mode": "board",
-    "aliases": ["半导体设备", "半导体材料", "先进封装"],
-    "note": "优先使用半导体设备/材料相关公开板块作为代理口径"
-  },
+  {"name":"半导体","mode":"board","aliases":["半导体","半导体设备"],"prefer":"industry"},
+  {"name":"半导体材料设备","mode":"board","aliases":["半导体设备","半导体材料","先进封装"],"note":"优先使用半导体设备/材料相关公开板块作为代理口径"},
   {"name":"存储芯片","mode":"board","aliases":["存储芯片","存储器"]},
   {"name":"机器人","mode":"board","aliases":["机器人概念","机器人","人形机器人"]},
   {"name":"人工智能","mode":"board","aliases":["人工智能","AI概念"]},
@@ -54,5 +44,7 @@
   {"name":"创业板","mode":"security","secid":"0.399006","benchmark":"399006","benchmark_name":"创业板指","source":"深交所"},
   {"name":"北证","mode":"security","queries":["899050","北证50","北证50成份指数"],"source":"北交所/东方财富公开行情"},
   {"name":"恒生科技","mode":"security","queries":["HSTECH","恒生科技指数"],"source":"恒生指数有限公司/东方财富公开行情"},
-  {"name":"港股红利","mode":"security","queries":["港股通高股息","恒生港股通高股息低波动指数","港股红利"],"source":"港股公开指数/东方财富公开行情","note":"以可自动匹配的港股高股息/红利指数作为代理口径"}
+  {"name":"港股红利","mode":"security","queries":["港股通高股息","恒生港股通高股息低波动指数","港股红利"],"source":"港股公开指数/东方财富公开行情","note":"以可自动匹配的港股高股息/红利指数作为代理口径"},
+  {"name":"纳斯达克","mode":"security","benchmark":"^IXIC","benchmark_name":"纳斯达克综合指数","source":"Yahoo Finance公开行情"},
+  {"name":"标普500","mode":"security","benchmark":"^GSPC","benchmark_name":"标普500指数","source":"Yahoo Finance公开行情"}
 ]
