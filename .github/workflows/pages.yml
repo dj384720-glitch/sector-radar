@@ -33,6 +33,7 @@ jobs:
           python scripts/repair_fund_history.py
           python scripts/add_fund_ui.py
           python scripts/add_radar_v15.py
+          python scripts/add_radar_v20.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
