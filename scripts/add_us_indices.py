@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 
-from scripts.update_data import PERIODS, calc_returns, chart_history, fetch_series
+from update_data import PERIODS, calc_returns, chart_history, fetch_series
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "docs" / "data" / "latest.json"
