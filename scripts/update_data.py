@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Build docs/data/latest.json using Tencent Finance with Yahoo Finance fallback.
+"""Build the Sector Radar dataset with chart-ready history.
 
-Primary source:
-- Tencent smartbox search and public K-line endpoints.
-Fallback:
-- Yahoo Finance public chart/search endpoints.
+Primary source: Tencent Finance public K-line endpoints.
+Fallbacks: Yahoo Finance, then Sina Finance for Beijing Stock Exchange symbols.
 
-Theme rows use a listed ETF proxy when no single authoritative long-history
-sector index is available. The page labels the proxy and leaves unavailable
-long horizons blank instead of extrapolating.
+Each configured sector is bound to an explicit public index or ETF proxy so the
+result is deterministic. The output contains both multi-period returns and a
+price history used by the left-navigation detail charts on GitHub Pages.
 """
 from __future__ import annotations
 
@@ -19,7 +17,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import json
 import math
-import re
 import time
 import urllib.parse
 import urllib.request
@@ -28,31 +25,58 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "data" / "sectors.json"
 OUT_DIR = ROOT / "docs" / "data"
 OUT_PATH = OUT_DIR / "latest.json"
-
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
 
 PERIODS = [
-    ("近10年", ("years", 10)),
-    ("近5年", ("years", 5)),
-    ("近3年", ("years", 3)),
-    ("近1年", ("years", 1)),
-    ("近6个月", ("months", 6)),
-    ("近3个月", ("months", 3)),
-    ("近1个月", ("months", 1)),
     ("近1周", ("days", 7)),
+    ("近1个月", ("months", 1)),
+    ("近3个月", ("months", 3)),
+    ("近6个月", ("months", 6)),
+    ("近1年", ("years", 1)),
+    ("近3年", ("years", 3)),
+    ("近5年", ("years", 5)),
+    ("近10年", ("years", 10)),
 ]
 
+# name -> (Tencent symbol, display name, methodology)
 DIRECT = {
     "半导体": ("sh512480", "半导体ETF国联安", "ETF代理"),
     "半导体材料设备": ("sz159516", "半导体设备材料ETF", "ETF代理"),
+    "存储芯片": ("sh512480", "半导体ETF国联安", "半导体ETF代理"),
     "机器人": ("sh562500", "机器人ETF", "ETF代理"),
     "人工智能": ("sh515070", "人工智能ETF", "ETF代理"),
+    "AI应用": ("sh515070", "人工智能ETF", "人工智能ETF代理"),
+    "算力租赁": ("sz158041", "创业板算力ETF华夏", "ETF代理"),
+    "国产算力": ("sh515070", "人工智能ETF", "人工智能ETF代理"),
     "云计算": ("sh516510", "云计算ETF", "ETF代理"),
+    "CPO": ("sh515880", "通信ETF", "通信ETF代理"),
+    "PCB": ("sh512480", "半导体ETF国联安", "电子产业ETF代理"),
+    "通信": ("sh515880", "通信ETF国泰", "ETF代理"),
+    "消费电子": ("sz159732", "消费电子ETF华夏", "ETF代理"),
+    "金融科技": ("sz159851", "金融科技ETF华宝", "ETF代理"),
+    "证券保险": ("sh512070", "证券保险ETF易方达", "ETF代理"),
+    "银行": ("sh512800", "银行ETF华宝", "ETF代理"),
     "房地产": ("sz159768", "房地产ETF", "ETF代理"),
+    "医药": ("sh512010", "医药ETF易方达", "ETF代理"),
+    "医疗": ("sh512170", "医疗ETF华宝", "ETF代理"),
+    "创新药": ("sz159992", "创新药ETF银华", "ETF代理"),
     "海外医药": ("sh513060", "恒生医疗ETF博时", "ETF代理"),
+    "CXO": ("sh512170", "医疗ETF", "医疗ETF代理"),
     "白酒": ("sh512690", "酒ETF鹏华", "ETF代理"),
+    "食品饮料": ("sh515170", "食品饮料ETF华夏", "ETF代理"),
+    "消费": ("sz159928", "消费ETF汇添富", "ETF代理"),
+    "煤炭": ("sh515220", "煤炭ETF国泰", "ETF代理"),
+    "有色金属": ("sh512400", "有色金属ETF南方", "ETF代理"),
+    "黄金": ("sh518880", "黄金ETF华安", "ETF代理"),
     "油气资源": ("sz159697", "油气ETF", "ETF代理"),
+    "电力": ("sz159611", "电力ETF广发", "ETF代理"),
+    "新能源": ("sh516160", "新能源ETF南方", "ETF代理"),
+    "光伏": ("sh515790", "光伏ETF华泰柏瑞", "ETF代理"),
+    "储能": ("sz159566", "储能电池ETF易方达", "ETF代理"),
+    "固态电池": ("sz159755", "电池ETF", "电池ETF代理"),
     "汽车整车": ("sh516110", "汽车ETF国泰", "ETF代理"),
+    "军工": ("sh512660", "军工ETF国泰", "ETF代理"),
+    "商业航天": ("sh512660", "军工ETF", "军工ETF代理"),
     "红利": ("sh000922", "中证红利指数", "指数"),
     "沪深300": ("sh000300", "沪深300指数", "指数"),
     "中证500": ("sh000905", "中证500指数", "指数"),
@@ -60,25 +84,13 @@ DIRECT = {
     "科创板": ("sh000688", "科创50指数", "指数"),
     "创业板": ("sz399006", "创业板指", "指数"),
     "北证": ("bj899050", "北证50指数", "指数"),
-}
-
-FALLBACK_PROXY = {
-    "存储芯片": ("sh512480", "半导体ETF国联安", "半导体ETF代理"),
-    "AI应用": ("sh515070", "人工智能ETF", "人工智能ETF代理"),
-    "算力租赁": ("sh516510", "云计算ETF", "云计算ETF代理"),
-    "国产算力": ("sh515070", "人工智能ETF", "人工智能ETF代理"),
-    "CPO": ("sh515880", "通信ETF", "通信ETF代理"),
-    "PCB": ("sh512480", "半导体ETF国联安", "电子产业ETF代理"),
-    "消费电子": ("sh512480", "半导体ETF国联安", "电子产业ETF代理"),
-    "CXO": ("sh512170", "医疗ETF", "医疗ETF代理"),
-    "固态电池": ("sz159755", "电池ETF", "电池ETF代理"),
-    "商业航天": ("sh512660", "军工ETF", "军工ETF代理"),
-    "食品饮料": ("sz159928", "消费ETF", "主要消费ETF代理"),
+    "恒生科技": ("sh513180", "恒生科技ETF华夏", "ETF代理"),
+    "港股红利": ("sh513690", "港股红利ETF博时", "ETF代理"),
 }
 
 
-def http_bytes(url: str, timeout: float = 8.0, retries: int = 2, encoding: str | None = None):
-    last = None
+def http_bytes(url: str, timeout: float = 8.0, retries: int = 2, referer: str = "https://finance.qq.com/") -> bytes:
+    last: Exception | None = None
     for attempt in range(retries):
         try:
             req = urllib.request.Request(
@@ -86,14 +98,11 @@ def http_bytes(url: str, timeout: float = 8.0, retries: int = 2, encoding: str |
                 headers={
                     "User-Agent": UA,
                     "Accept": "application/json,text/plain,*/*",
-                    "Referer": "https://finance.qq.com/",
+                    "Referer": referer,
                 },
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-            if encoding:
-                return raw.decode(encoding, errors="ignore")
-            return raw
+                return resp.read()
         except Exception as exc:
             last = exc
             if attempt + 1 < retries:
@@ -101,187 +110,9 @@ def http_bytes(url: str, timeout: float = 8.0, retries: int = 2, encoding: str |
     raise RuntimeError(str(last))
 
 
-def http_json(url: str, timeout: float = 8.0, retries: int = 2):
-    raw = http_bytes(url, timeout=timeout, retries=retries)
+def http_json(url: str, timeout: float = 8.0, retries: int = 2, referer: str = "https://finance.qq.com/"):
+    raw = http_bytes(url, timeout=timeout, retries=retries, referer=referer)
     return json.loads(raw.decode("utf-8", errors="ignore"))
-
-
-def normalize(text: str) -> str:
-    s = str(text or "").lower()
-    for token in (" ", "-", "_", "（", "）", "(", ")", "概念", "主题", "指数", "etf", "交易型开放式", "基金"):
-        s = s.replace(token, "")
-    return s
-
-
-def is_etf_code(market: str, code: str) -> bool:
-    if market == "sh":
-        return code.startswith(("51", "56", "58"))
-    if market == "sz":
-        return code.startswith("15")
-    return False
-
-
-def parse_tencent_search_rows(payload: dict) -> list[dict]:
-    rows = []
-    data = payload.get("data") or {}
-    for key in ("stock", "fund"):
-        for row in data.get(key) or []:
-            if not isinstance(row, list) or len(row) < 3:
-                continue
-            market, code, name = str(row[0]).lower(), str(row[1]), str(row[2])
-            if market in {"sh", "sz", "bj", "hk"} and code:
-                rows.append({"market": market, "code": code, "name": name, "api_code": market + code})
-    return rows
-
-
-def tencent_search(term: str) -> list[dict]:
-    q = urllib.parse.quote(term)
-    urls = [
-        f"https://proxy.finance.qq.com/ifzqgtimg/appstock/smartbox/search/get?q={q}",
-        f"https://smartbox.gtimg.cn/s3/?v=2&t=all&c=1&q={q}",
-    ]
-    try:
-        payload = http_json(urls[0], timeout=6, retries=1)
-        rows = parse_tencent_search_rows(payload)
-        if rows:
-            return rows
-    except Exception:
-        pass
-    try:
-        text = http_bytes(urls[1], timeout=6, retries=1, encoding="gb18030")
-        m = re.search(r'v_hint="(.*)"', text)
-        if not m:
-            return []
-        rows = []
-        for chunk in m.group(1).split("^"):
-            parts = chunk.split("~")
-            if len(parts) >= 3 and parts[0] in {"sh", "sz", "bj", "hk"}:
-                rows.append({
-                    "market": parts[0],
-                    "code": parts[1],
-                    "name": parts[2],
-                    "api_code": parts[0] + parts[1],
-                })
-        return rows
-    except Exception:
-        return []
-
-
-def score_match(name: str, aliases: list[str]) -> int:
-    nn = normalize(name)
-    best = 0
-    for idx, alias in enumerate(aliases):
-        an = normalize(alias)
-        if not an:
-            continue
-        score = 0
-        if nn == an:
-            score = 120
-        elif an in nn:
-            score = 90
-        elif nn in an and len(nn) >= 2:
-            score = 70
-        else:
-            overlap = sum(1 for ch in set(an) if ch in nn)
-            score = min(40, overlap * 6)
-        best = max(best, score - idx)
-    if "etf" in name.lower():
-        best += 15
-    return best
-
-
-def search_terms(entry: dict) -> list[str]:
-    terms = [entry.get("name", "")]
-    terms += [str(x) for x in entry.get("aliases") or []]
-    terms += [str(x) for x in entry.get("queries") or [] if not str(x).isdigit()]
-    seen, out = set(), []
-    for t in terms:
-        t = t.strip()
-        if not t:
-            continue
-        for q in (t + "ETF", t):
-            if q not in seen:
-                seen.add(q)
-                out.append(q)
-    return out[:6]
-
-
-def resolve_tencent_proxy(entry: dict) -> dict | None:
-    aliases = [entry["name"]] + [str(x) for x in entry.get("aliases") or []]
-    candidates = []
-    for term in search_terms(entry):
-        for row in tencent_search(term):
-            if not is_etf_code(row["market"], row["code"]):
-                continue
-            score = score_match(row["name"], aliases)
-            if "ETF" in term.upper():
-                score += 5
-            candidates.append((score, row))
-        if candidates and max(x[0] for x in candidates) >= 90:
-            break
-    if not candidates:
-        return None
-    score, row = max(candidates, key=lambda x: x[0])
-    if score < 20:
-        return None
-    return {"provider": "tencent", "code": row["api_code"], "name": row["name"], "kind": "ETF代理"}
-
-
-def yahoo_search(term: str) -> list[dict]:
-    url = "https://query1.finance.yahoo.com/v1/finance/search?" + urllib.parse.urlencode({
-        "q": term,
-        "quotesCount": "12",
-        "newsCount": "0",
-    })
-    payload = http_json(url, timeout=7, retries=1)
-    out = []
-    for q in payload.get("quotes") or []:
-        symbol = str(q.get("symbol") or "")
-        quote_type = str(q.get("quoteType") or "").upper()
-        name = str(q.get("shortname") or q.get("longname") or symbol)
-        if quote_type in {"ETF", "INDEX"} and (
-            symbol.endswith(".SS") or symbol.endswith(".SZ") or symbol.endswith(".BJ") or symbol.endswith(".HK")
-        ):
-            out.append({"symbol": symbol, "name": name, "quote_type": quote_type})
-    return out
-
-
-def resolve_yahoo_proxy(entry: dict) -> dict | None:
-    aliases = [entry["name"]] + [str(x) for x in entry.get("aliases") or []]
-    candidates = []
-    for term in search_terms(entry):
-        try:
-            rows = yahoo_search(term)
-        except Exception:
-            continue
-        for row in rows:
-            score = score_match(row["name"], aliases)
-            candidates.append((score, row))
-        if candidates and max(x[0] for x in candidates) >= 90:
-            break
-    if not candidates:
-        return None
-    score, row = max(candidates, key=lambda x: x[0])
-    if score < 20:
-        return None
-    return {"provider": "yahoo", "symbol": row["symbol"], "name": row["name"], "kind": "ETF代理"}
-
-
-def resolve(entry: dict) -> dict:
-    name = entry["name"]
-    if name in DIRECT:
-        code, label, kind = DIRECT[name]
-        return {"provider": "tencent", "code": code, "name": label, "kind": kind}
-    hit = resolve_tencent_proxy(entry)
-    if hit:
-        return hit
-    hit = resolve_yahoo_proxy(entry)
-    if hit:
-        return hit
-    if name in FALLBACK_PROXY:
-        code, label, kind = FALLBACK_PROXY[name]
-        return {"provider": "tencent", "code": code, "name": label, "kind": kind, "fallback": True}
-    return {"provider": "none", "name": "暂无匹配", "kind": "未匹配"}
 
 
 def parse_tencent_rows(payload: dict, code: str, period: str, adjusted: bool) -> list[tuple[date, float]]:
@@ -292,7 +123,7 @@ def parse_tencent_rows(payload: dict, code: str, period: str, adjusted: bool) ->
         if isinstance(block.get(key), list):
             raw_rows = block[key]
             break
-    out = []
+    out: list[tuple[date, float]] = []
     for row in raw_rows:
         if not isinstance(row, list) or len(row) < 3:
             continue
@@ -307,9 +138,11 @@ def parse_tencent_rows(payload: dict, code: str, period: str, adjusted: bool) ->
 
 
 def fetch_tencent_series(code: str) -> list[tuple[date, float]]:
-    all_points = {}
-    failures = []
-    for period, count in (("day", 500), ("week", 800), ("month", 240)):
+    all_points: dict[date, float] = {}
+    failures: list[str] = []
+    # Dense daily data for short/medium ranges, plus weekly/monthly history for 10y charts.
+    for period, count in (("day", 520), ("week", 800), ("month", 240)):
+        success = False
         for adjusted in (True, False):
             endpoint = "fqkline/get" if adjusted else "kline/kline"
             adjust = ",qfq" if adjusted else ""
@@ -320,12 +153,16 @@ def fetch_tencent_series(code: str) -> list[tuple[date, float]]:
                 if rows:
                     for d, c in rows:
                         all_points[d] = c
+                    success = True
                     break
             except Exception as exc:
                 failures.append(f"{period}:{exc}")
+        if not success:
+            continue
     points = sorted(all_points.items())
     if len(points) < 2:
-        raise RuntimeError("腾讯K线无有效数据" + (f" ({failures[-1]})" if failures else ""))
+        tail = f" ({failures[-1]})" if failures else ""
+        raise RuntimeError("腾讯K线无有效数据" + tail)
     return points
 
 
@@ -336,8 +173,6 @@ def code_to_yahoo(code: str) -> str | None:
         return code[2:] + ".SZ"
     if code.startswith("bj") and len(code) == 8:
         return code[2:] + ".BJ"
-    if code.startswith("hk"):
-        return code[2:].zfill(4) + ".HK"
     return None
 
 
@@ -347,22 +182,22 @@ def fetch_yahoo_series(symbol: str) -> list[tuple[date, float]]:
         f"https://query1.finance.yahoo.com/v8/finance/chart/{enc}"
         "?range=10y&interval=1d&events=div%2Csplits&includeAdjustedClose=true"
     )
-    payload = http_json(url, timeout=10, retries=2)
+    payload = http_json(url, timeout=10, retries=2, referer="https://finance.yahoo.com/")
     result = ((payload.get("chart") or {}).get("result") or [None])[0]
     if not result:
         raise RuntimeError("Yahoo chart empty")
     ts = result.get("timestamp") or []
-    ind = result.get("indicators") or {}
-    adj = ((ind.get("adjclose") or [{}])[0]).get("adjclose") or []
-    close = ((ind.get("quote") or [{}])[0]).get("close") or []
+    indicators = result.get("indicators") or {}
+    adj = ((indicators.get("adjclose") or [{}])[0]).get("adjclose") or []
+    close = ((indicators.get("quote") or [{}])[0]).get("close") or []
     vals = adj if len(adj) == len(ts) else close
-    out = []
+    out: list[tuple[date, float]] = []
     for t, v in zip(ts, vals):
         if v is None:
             continue
         try:
-            c = float(v)
             d = datetime.fromtimestamp(int(t), tz=timezone.utc).date()
+            c = float(v)
         except Exception:
             continue
         if math.isfinite(c) and c > 0:
@@ -380,10 +215,10 @@ def fetch_sina_series(symbol: str) -> list[tuple[date, float]]:
         "ma": "no",
         "datalen": "1023",
     })
-    payload = http_json(url, timeout=9, retries=2)
+    payload = http_json(url, timeout=9, retries=2, referer="https://finance.sina.com.cn/")
     if not isinstance(payload, list):
         raise RuntimeError("Sina K线响应异常")
-    out = []
+    out: list[tuple[date, float]] = []
     for row in payload:
         try:
             day = str(row.get("day") or "").split(" ", 1)[0]
@@ -399,30 +234,25 @@ def fetch_sina_series(symbol: str) -> list[tuple[date, float]]:
     return out
 
 
-def fetch_series(resolved: dict) -> tuple[list[tuple[date, float]], str]:
-    errors = []
-    if resolved.get("provider") == "tencent":
-        code = resolved["code"]
+def fetch_series(code: str) -> tuple[list[tuple[date, float]], str]:
+    errors: list[str] = []
+    try:
+        return fetch_tencent_series(code), "腾讯财经公开K线"
+    except Exception as exc:
+        errors.append(f"Tencent: {exc}")
+
+    symbol = code_to_yahoo(code)
+    if symbol:
         try:
-            return fetch_tencent_series(code), "腾讯财经公开K线"
-        except Exception as exc:
-            errors.append(f"Tencent: {exc}")
-        symbol = code_to_yahoo(code)
-        if symbol:
-            try:
-                return fetch_yahoo_series(symbol), "Yahoo Finance公开行情（腾讯失败后回退）"
-            except Exception as exc:
-                errors.append(f"Yahoo: {exc}")
-        if code.startswith("bj"):
-            try:
-                return fetch_sina_series(code), "新浪财经公开K线（腾讯/Yahoo失败后回退）"
-            except Exception as exc:
-                errors.append(f"Sina: {exc}")
-    elif resolved.get("provider") == "yahoo":
-        try:
-            return fetch_yahoo_series(resolved["symbol"]), "Yahoo Finance公开行情"
+            return fetch_yahoo_series(symbol), "Yahoo Finance公开行情（腾讯失败后回退）"
         except Exception as exc:
             errors.append(f"Yahoo: {exc}")
+
+    if code.startswith("bj"):
+        try:
+            return fetch_sina_series(code), "新浪财经公开K线（腾讯/Yahoo失败后回退）"
+        except Exception as exc:
+            errors.append(f"Sina: {exc}")
     raise RuntimeError("；".join(errors) or "没有可用数据源")
 
 
@@ -447,7 +277,7 @@ def target_date(latest: date, spec: tuple[str, int]) -> date:
 def calc_returns(points: list[tuple[date, float]]) -> dict[str, float | None]:
     dates = [d for d, _ in points]
     latest_date, latest_close = points[-1]
-    out = {}
+    out: dict[str, float | None] = {}
     for label, spec in PERIODS:
         target = target_date(latest_date, spec)
         idx = bisect_right(dates, target) - 1
@@ -462,44 +292,58 @@ def calc_returns(points: list[tuple[date, float]]) -> dict[str, float | None]:
     return out
 
 
-def build_item(entry: dict) -> dict:
-    resolved = resolve(entry)
+def chart_history(points: list[tuple[date, float]]) -> list[list[str | float]]:
+    if not points:
+        return []
+    latest = points[-1][0]
+    cutoff = shift_months(latest, 121)  # a little extra so the 10y boundary is visible
+    rows = [[d.isoformat(), round(c, 6)] for d, c in points if d >= cutoff]
+    # Keep the payload lean if a fallback source supplies dense 10y daily history.
+    if len(rows) > 1900:
+        step = max(1, len(rows) // 1800)
+        sampled = rows[::step]
+        if sampled[-1][0] != rows[-1][0]:
+            sampled.append(rows[-1])
+        rows = sampled
+    return rows
+
+
+def build_item(entry: dict, fetched: dict[str, tuple[list[tuple[date, float]], str] | Exception]) -> dict:
+    name = entry["name"]
+    binding = DIRECT.get(name)
     item = {
-        "name": entry["name"],
-        "benchmark": resolved.get("name", "暂无匹配"),
-        "code": resolved.get("code") or resolved.get("symbol") or "",
+        "name": name,
+        "benchmark": "暂无匹配",
+        "code": "",
         "source": "",
         "note": entry.get("note", ""),
         "status": "unavailable",
         "returns": {label: None for label, _ in PERIODS},
         "latest_date": None,
         "start_date": None,
+        "history": [],
     }
-    if resolved.get("provider") == "none":
-        item["source"] = "未找到可用指数/ETF代理"
-        item["note"] = (item["note"] + "；" if item["note"] else "") + "腾讯与Yahoo均未匹配到合适标的"
+    if not binding:
+        item["source"] = "未配置公开指数/ETF代理"
+        item["note"] = (item["note"] + "；" if item["note"] else "") + "该板块尚未配置固定公开代理"
         return item
 
-    kind = resolved.get("kind", "")
-    if kind == "ETF代理":
-        item["benchmark"] = f"{resolved['name']} · ETF代理"
-    elif "代理" in kind:
-        item["benchmark"] = f"{resolved['name']} · {kind}"
-    else:
-        item["benchmark"] = resolved["name"]
-
-    try:
-        points, source = fetch_series(resolved)
-        item["source"] = source
-    except Exception as exc:
+    code, label, kind = binding
+    item["code"] = code
+    item["benchmark"] = label if kind == "指数" else f"{label} · {kind}"
+    result = fetched.get(code)
+    if isinstance(result, Exception) or result is None:
         item["status"] = "error"
-        item["source"] = "腾讯财经 / Yahoo Finance"
-        item["note"] = (item["note"] + "；" if item["note"] else "") + str(exc)[:240]
+        item["source"] = "腾讯财经 / Yahoo Finance / 新浪财经"
+        item["note"] = (item["note"] + "；" if item["note"] else "") + str(result or "行情抓取失败")[:260]
         return item
 
+    points, source = result
+    item["source"] = source
     item["returns"] = calc_returns(points)
     item["latest_date"] = points[-1][0].isoformat()
     item["start_date"] = points[0][0].isoformat()
+    item["history"] = chart_history(points)
     available = sum(v is not None for v in item["returns"].values())
     if available == len(PERIODS):
         item["status"] = "ok"
@@ -508,7 +352,7 @@ def build_item(entry: dict) -> dict:
     else:
         item["status"] = "short_history"
 
-    if kind and kind != "指数":
+    if kind != "指数":
         suffix = f"口径：{kind}，用于代表该主题的可交易公开价格序列"
         item["note"] = (item["note"] + "；" if item["note"] else "") + suffix
     return item
@@ -516,27 +360,20 @@ def build_item(entry: dict) -> dict:
 
 def main() -> None:
     sectors = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    results = [None] * len(sectors)
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        jobs = {pool.submit(build_item, entry): i for i, entry in enumerate(sectors)}
-        for fut in as_completed(jobs):
-            idx = jobs[fut]
-            try:
-                results[idx] = fut.result()
-            except Exception as exc:
-                entry = sectors[idx]
-                results[idx] = {
-                    "name": entry["name"],
-                    "benchmark": "暂无匹配",
-                    "code": "",
-                    "source": "腾讯财经 / Yahoo Finance",
-                    "note": f"任务异常：{exc}",
-                    "status": "error",
-                    "returns": {label: None for label, _ in PERIODS},
-                    "latest_date": None,
-                    "start_date": None,
-                }
+    codes = sorted({DIRECT[x["name"]][0] for x in sectors if x.get("name") in DIRECT})
+    fetched: dict[str, tuple[list[tuple[date, float]], str] | Exception] = {}
 
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        jobs = {pool.submit(fetch_series, code): code for code in codes}
+        for fut in as_completed(jobs):
+            code = jobs[fut]
+            try:
+                fetched[code] = fut.result()
+            except Exception as exc:
+                fetched[code] = exc
+                print(f"[warn] {code}: {exc}")
+
+    results = [build_item(entry, fetched) for entry in sectors]
     resolved_count = sum(1 for x in results if x["status"] in {"ok", "partial", "short_history"})
     full_count = sum(1 for x in results if x["status"] == "ok")
     payload = {
@@ -551,7 +388,7 @@ def main() -> None:
         "sectors": results,
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    OUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(f"[done] wrote {OUT_PATH}; resolved={resolved_count}/{len(results)} full={full_count}")
 
 
