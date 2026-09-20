@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Attach five concrete ETF funds to every sector with return and max-drawdown metrics.
+"""Attach five relevant exchange-listed ETFs to every sector.
 
-Fund discovery uses one Sina Finance public ETF-universe request and ranks real
-exchange-listed ETFs by sector-specific aliases. Price history uses the same
-Tencent-backed daily pipeline as the sector charts. The five funds are
-representative examples, not recommendations or a performance ranking.
+ETF discovery paginates Sina Finance's public ETF universe, then matches names
+against sector-specific aliases.  Only ETFs with an actual sector-name match are
+eligible; fixed-income/cash ETFs are excluded.  Price history comes from the
+same daily Tencent-backed pipeline used by Sector Radar.  The five rows are
+representative related funds, not recommendations or a performance ranking.
 """
 from __future__ import annotations
 
@@ -14,24 +15,26 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import json
 import re
+import urllib.parse
 
 from add_daily_history import fetch_daily
 from update_data import PERIODS, http_bytes, target_date
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "docs" / "data" / "latest.json"
-SINA_LIST = (
+SINA_BASE = (
     "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-    "Market_Center.getHQNodeData?page=1&num=5000&sort=symbol&asc=1&"
-    "node=etf_hq_fund&symbol=&_s_r_a=auto"
+    "Market_Center.getHQNodeData"
 )
+PAGE_SIZE = 100
+MAX_PAGES = 30
 
 ALIASES: dict[str, list[str]] = {
     "半导体": ["半导体", "芯片", "集成电路", "科创芯片"],
     "半导体材料设备": ["半导体设备", "半导体材料", "芯片设备", "科创芯片", "半导体"],
     "存储芯片": ["存储", "芯片", "集成电路", "半导体"],
     "机器人": ["机器人", "人形机器人", "智能制造", "高端装备"],
-    "人工智能": ["人工智能", "AI", "科创AI", "智能"],
+    "人工智能": ["人工智能", "科创AI", "AI", "智能"],
     "AI应用": ["AI应用", "人工智能", "软件", "传媒", "云计算"],
     "算力租赁": ["算力", "数据中心", "云计算", "通信", "人工智能"],
     "国产算力": ["算力", "国产芯片", "芯片", "人工智能", "半导体"],
@@ -49,7 +52,7 @@ ALIASES: dict[str, list[str]] = {
     "创新药": ["创新药", "生物科技", "生物医药", "医药", "港股创新药"],
     "海外医药": ["恒生医疗", "港股创新药", "港股医药", "医疗", "医药"],
     "CXO": ["CXO", "医疗", "医药", "创新药"],
-    "白酒": ["白酒", "酒", "食品饮料", "消费"],
+    "白酒": ["白酒", "酒ETF", "食品饮料", "消费"],
     "食品饮料": ["食品饮料", "食品", "饮料", "消费"],
     "消费": ["消费", "消费50", "可选消费", "主要消费"],
     "煤炭": ["煤炭", "能源", "红利"],
@@ -78,86 +81,196 @@ ALIASES: dict[str, list[str]] = {
 }
 
 FALLBACK: dict[str, list[str]] = {
-    "半导体材料设备": ["芯片", "半导体"], "存储芯片": ["芯片", "半导体"],
-    "AI应用": ["人工智能", "计算机"], "算力租赁": ["算力", "云计算", "通信"],
-    "国产算力": ["算力", "芯片", "人工智能"], "CPO": ["通信", "科技"],
-    "PCB": ["电子", "消费电子"], "金融科技": ["证券", "金融"],
-    "证券保险": ["证券", "金融"], "房地产": ["地产", "基建"],
-    "海外医药": ["医疗", "创新药", "医药"], "CXO": ["医药", "医疗"],
-    "白酒": ["食品饮料", "消费"], "煤炭": ["能源", "红利"],
-    "油气资源": ["能源", "资源"], "储能": ["电池", "新能源"],
-    "固态电池": ["电池", "新能源车"], "汽车整车": ["汽车", "新能源车"],
-    "商业航天": ["军工", "航空"], "北证": ["北证", "创新"],
-    "港股红利": ["港股", "红利"],
+    "半导体材料设备": ["芯片", "半导体"],
+    "存储芯片": ["芯片", "半导体"],
+    "机器人": ["智能制造", "高端装备", "机械"],
+    "人工智能": ["人工智能", "软件", "计算机", "科技"],
+    "AI应用": ["人工智能", "软件", "计算机", "传媒"],
+    "算力租赁": ["算力", "云计算", "通信", "数据中心"],
+    "国产算力": ["算力", "芯片", "人工智能", "半导体"],
+    "云计算": ["计算机", "软件", "人工智能"],
+    "CPO": ["通信", "5G", "科技"],
+    "PCB": ["电子", "消费电子", "半导体"],
+    "消费电子": ["电子", "科技"],
+    "金融科技": ["证券", "金融", "计算机"],
+    "证券保险": ["证券", "金融"],
+    "房地产": ["地产", "基建"],
+    "海外医药": ["医疗", "创新药", "医药"],
+    "CXO": ["医药", "医疗", "创新药"],
+    "白酒": ["食品饮料", "消费"],
+    "食品饮料": ["消费"],
+    "煤炭": ["能源", "红利"],
+    "有色金属": ["资源", "矿业"],
+    "油气资源": ["能源", "资源"],
+    "电力": ["公用事业", "央企"],
+    "储能": ["电池", "新能源"],
+    "固态电池": ["电池", "新能源车"],
+    "汽车整车": ["汽车", "新能源车"],
+    "商业航天": ["军工", "航空", "国防"],
+    "北证": ["北证", "创新"],
+    "港股红利": ["港股", "红利", "高股息"],
+    "纳斯达克": ["纳指", "美国", "海外科技"],
+    "标普500": ["标普", "美国", "海外"],
 }
 
+EXCLUDE_TERMS = (
+    "货币", "国债", "地方债", "政金债", "金融债", "信用债", "可转债",
+    "公司债", "城投债", "债券", "短融", "利率债", "同业存单", "现金",
+)
 
-def fetch_etf_universe() -> list[dict[str, str]]:
-    raw = http_bytes(SINA_LIST, timeout=12, retries=2, referer="https://vip.stock.finance.sina.com.cn/")
-    text = raw.decode("utf-8", errors="ignore")
-    out: list[dict[str, str]] = []
+
+def decode_name(raw: str) -> str:
+    raw = raw.strip()
+    if "\\u" in raw or "\\x" in raw:
+        try:
+            # JSON decoding correctly converts Sina's literal \\uXXXX sequences.
+            return json.loads('"' + raw.replace('"', '\\"') + '"')
+        except Exception:
+            pass
+    return raw
+
+
+def parse_page(raw: bytes) -> list[dict[str, str]]:
+    text = raw.decode("utf-8", errors="ignore").strip()
+    rows: list[dict[str, str]] = []
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            for row in payload:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol") or "").strip()
+                name = decode_name(str(row.get("name") or ""))
+                if re.fullmatch(r"(?:sh|sz)\d{6}", symbol) and name:
+                    rows.append({"code": symbol, "name": name})
+            if rows:
+                return rows
+    except Exception:
+        pass
+
+    # The endpoint sometimes returns JavaScript-like objects rather than strict JSON.
     for body in re.findall(r"\{([^{}]+)\}", text):
-        sm = re.search(r'(?:^|,)symbol:\"([^\"]+)\"', body)
-        nm = re.search(r'(?:^|,)name:\"([^\"]+)\"', body)
+        sm = re.search(r'(?:^|,)\s*symbol\s*:\s*[\"\']([^\"\']+)', body)
+        nm = re.search(r'(?:^|,)\s*name\s*:\s*[\"\']([^\"\']+)', body)
         if not sm or not nm:
-            sm = re.search(r'\"symbol\"\s*:\s*\"([^\"]+)\"', body)
-            nm = re.search(r'\"name\"\s*:\s*\"([^\"]+)\"', body)
+            sm = re.search(r'[\"\']symbol[\"\']\s*:\s*[\"\']([^\"\']+)', body)
+            nm = re.search(r'[\"\']name[\"\']\s*:\s*[\"\']([^\"\']+)', body)
         if not sm or not nm:
             continue
-        symbol, name = sm.group(1).strip(), nm.group(1).strip()
+        symbol = sm.group(1).strip()
+        name = decode_name(nm.group(1))
         if re.fullmatch(r"(?:sh|sz)\d{6}", symbol) and name:
-            out.append({"code": symbol, "name": name})
-    uniq: dict[str, dict[str, str]] = {}
-    for x in out:
-        uniq.setdefault(x["code"], x)
-    rows = list(uniq.values())
-    if len(rows) < 50:
-        raise RuntimeError(f"新浪ETF列表解析异常，仅得到 {len(rows)} 条")
+            rows.append({"code": symbol, "name": name})
     return rows
 
 
-def score_name(name: str, sector: str, aliases: list[str]) -> int:
-    up = name.upper()
-    score = 0
-    if sector.upper() in up:
-        score += 120
+def fetch_page(page: int) -> list[dict[str, str]]:
+    query = urllib.parse.urlencode({
+        "page": page,
+        "num": PAGE_SIZE,
+        "sort": "symbol",
+        "asc": 1,
+        "node": "etf_hq_fund",
+        "symbol": "",
+        "_s_r_a": "auto",
+    })
+    raw = http_bytes(
+        SINA_BASE + "?" + query,
+        timeout=12,
+        retries=2,
+        referer="https://vip.stock.finance.sina.com.cn/",
+    )
+    return parse_page(raw)
+
+
+def fetch_etf_universe() -> list[dict[str, str]]:
+    pages: dict[int, list[dict[str, str]]] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        jobs = {pool.submit(fetch_page, page): page for page in range(1, MAX_PAGES + 1)}
+        for fut in as_completed(jobs):
+            page = jobs[fut]
+            try:
+                pages[page] = fut.result()
+            except Exception as exc:
+                pages[page] = []
+                print(f"[funds-page-warn] page={page}: {str(exc)[:120]}")
+
+    uniq: dict[str, dict[str, str]] = {}
+    nonempty = 0
+    for page in sorted(pages):
+        rows = pages[page]
+        if rows:
+            nonempty += 1
+        for row in rows:
+            uniq.setdefault(row["code"], row)
+    universe = list(uniq.values())
+    if len(universe) < 100:
+        raise RuntimeError(f"ETF universe too small: {len(universe)}")
+    print(f"[funds] ETF universe={len(universe)} nonempty_pages={nonempty}")
+    return universe
+
+
+def matched_aliases(name: str, aliases: list[str]) -> list[tuple[int, str]]:
+    upper = name.upper().replace(" ", "")
+    hits: list[tuple[int, str]] = []
     for i, alias in enumerate(aliases):
-        a = alias.upper()
-        if a and a in up:
-            score += max(12, 60 - i * 7) + min(len(a) * 3, 18)
-    if "ETF" in up:
+        a = alias.upper().replace(" ", "")
+        if a and a in upper:
+            hits.append((i, alias))
+    return hits
+
+
+def score_name(name: str, sector: str, aliases: list[str]) -> int | None:
+    if any(term in name for term in EXCLUDE_TERMS):
+        return None
+    hits = matched_aliases(name, aliases)
+    sector_hit = sector.upper().replace(" ", "") in name.upper().replace(" ", "")
+    if not hits and not sector_hit:
+        return None
+
+    score = 130 if sector_hit else 0
+    for i, alias in hits:
+        score += max(18, 72 - i * 8) + min(len(alias) * 3, 18)
+    if "ETF" in name.upper():
         score += 8
-    for bad in ("债", "货币", "国债", "信用", "利率", "现金"):
-        if bad in name:
-            score -= 100
-    if sector != "黄金" and "黄金" in name:
-        score -= 30
+    # Prefer plain broad/index ETFs over leveraged/commodity-like variants where possible.
+    for term in ("增强", "杠杆", "反向"):
+        if term in name:
+            score -= 20
     return score
 
 
-def rank_by_aliases(sector: str, aliases: list[str], universe: list[dict[str, str]], seen: set[str]) -> list[dict[str, str]]:
-    ranked = []
-    for x in universe:
-        if x["code"] in seen:
+def rank_by_aliases(
+    sector: str,
+    aliases: list[str],
+    universe: list[dict[str, str]],
+    seen: set[str],
+) -> list[dict[str, str]]:
+    ranked: list[tuple[int, str, dict[str, str]]] = []
+    for row in universe:
+        if row["code"] in seen:
             continue
-        s = score_name(x["name"], sector, aliases)
-        if s > 0:
-            ranked.append((s, x["name"], x))
-    ranked.sort(key=lambda z: (-z[0], z[1]))
-    return [x for _, _, x in ranked]
+        score = score_name(row["name"], sector, aliases)
+        if score is not None:
+            ranked.append((score, row["name"], row))
+    ranked.sort(key=lambda x: (-x[0], x[1], x[2]["code"]))
+    return [row for _, _, row in ranked]
 
 
 def choose_funds(sector: str, universe: list[dict[str, str]]) -> list[dict[str, str]]:
     chosen: list[dict[str, str]] = []
     seen: set[str] = set()
-    for x in rank_by_aliases(sector, ALIASES.get(sector, [sector]), universe, seen):
-        chosen.append(x); seen.add(x["code"])
-        if len(chosen) == 5:
-            return chosen
-    for x in rank_by_aliases(sector, FALLBACK.get(sector, ALIASES.get(sector, [sector])), universe, seen):
-        chosen.append(x); seen.add(x["code"])
-        if len(chosen) == 5:
-            return chosen
+    stages = [ALIASES.get(sector, [sector])]
+    fallback = FALLBACK.get(sector)
+    if fallback:
+        stages.append(fallback)
+
+    for aliases in stages:
+        for row in rank_by_aliases(sector, aliases, universe, seen):
+            chosen.append(row)
+            seen.add(row["code"])
+            if len(chosen) == 5:
+                return chosen
     return chosen
 
 
@@ -202,18 +315,20 @@ def main() -> None:
     payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     sectors = payload.get("sectors") or []
     universe = fetch_etf_universe()
-    print(f"[funds] Sina ETF universe: {len(universe)}")
 
     selections: dict[str, list[dict[str, str]]] = {}
     for item in sectors:
-        name = str(item.get("name") or "")
-        picked = choose_funds(name, universe)
-        selections[name] = picked
-        print(f"[funds-select] {name}: {len(picked)} -> " + ", ".join(f"{x['name']}({x['code'][2:]})" for x in picked))
+        sector = str(item.get("name") or "")
+        picked = choose_funds(sector, universe)
+        selections[sector] = picked
+        print(
+            f"[funds-select] {sector}: {len(picked)} -> "
+            + ", ".join(f"{x['name']}({x['code'][2:]})" for x in picked)
+        )
 
     codes = sorted({x["code"] for rows in selections.values() for x in rows})
     histories: dict[str, list[tuple[date, float]] | Exception] = {}
-    with ThreadPoolExecutor(max_workers=12) as pool:
+    with ThreadPoolExecutor(max_workers=16) as pool:
         jobs = {pool.submit(fetch_daily, code): code for code in codes}
         for fut in as_completed(jobs):
             code = jobs[fut]
@@ -221,44 +336,58 @@ def main() -> None:
                 histories[code] = fut.result()
             except Exception as exc:
                 histories[code] = exc
-                print(f"[funds-warn] {code}: {exc}")
+                print(f"[fund-history-warn] {code}: {str(exc)[:140]}")
 
-    total_ok = 0
-    exact_five = 0
     total_rows = 0
+    history_rows = 0
+    sectors_with_five = 0
     for item in sectors:
-        name = str(item.get("name") or "")
-        fund_rows = []
-        for fund in selections.get(name, []):
-            result = histories.get(fund["code"])
-            row = {
-                "name": fund["name"], "code": fund["code"], "source": "腾讯财经公开K线",
-                "status": "error", "returns": {label: None for label, _ in PERIODS},
-                "drawdowns": {label: None for label, _ in PERIODS}, "latest_date": None, "start_date": None,
-            }
+        sector = str(item.get("name") or "")
+        funds: list[dict] = []
+        for selected in selections.get(sector, []):
+            result = histories.get(selected["code"])
             if isinstance(result, list) and len(result) >= 2:
-                ret, dd = metrics(result)
-                row.update({"status": "ok" if any(v is not None for v in ret.values()) else "short_history",
-                            "returns": ret, "drawdowns": dd,
-                            "latest_date": result[-1][0].isoformat(), "start_date": result[0][0].isoformat()})
-                total_ok += 1
-            elif isinstance(result, Exception):
-                row["note"] = str(result)[:180]
-            fund_rows.append(row)
-        item["funds"] = fund_rows
-        total_rows += len(fund_rows)
-        if len(fund_rows) == 5:
-            exact_five += 1
+                returns, drawdowns = metrics(result)
+                fund = {
+                    "name": selected["name"],
+                    "code": selected["code"],
+                    "source": "腾讯财经公开K线",
+                    "returns": returns,
+                    "drawdowns": drawdowns,
+                    "latest_date": result[-1][0].isoformat(),
+                    "start_date": result[0][0].isoformat(),
+                }
+                history_rows += 1
+            else:
+                fund = {
+                    "name": selected["name"],
+                    "code": selected["code"],
+                    "source": "行情暂不可用",
+                    "returns": {label: None for label, _ in PERIODS},
+                    "drawdowns": {label: None for label, _ in PERIODS},
+                    "latest_date": None,
+                    "start_date": None,
+                }
+            funds.append(fund)
+        item["funds"] = funds[:5]
+        total_rows += len(item["funds"])
+        if len(item["funds"]) == 5:
+            sectors_with_five += 1
 
     payload["sectors"] = sectors
-    payload["funds_summary"] = {
-        "sector_count": len(sectors), "sectors_with_five": exact_five,
-        "fund_rows": total_rows, "fund_rows_with_history": total_ok,
-        "method": "Sina ETF universe + Tencent daily K-line; representative, not ranked recommendations",
-    }
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-    DATA_PATH.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"[done] sector funds: five={exact_five}/{len(sectors)} history={total_ok}/{total_rows} unique_codes={len(codes)}")
+    payload["funds_updated_at"] = datetime.now(timezone.utc).isoformat()
+    summary = payload.setdefault("summary", {})
+    summary["fund_sectors_with_five"] = sectors_with_five
+    summary["fund_rows"] = total_rows
+    summary["fund_rows_with_history"] = history_rows
+    DATA_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(
+        f"[done] sector funds: five={sectors_with_five}/{len(sectors)} "
+        f"rows={total_rows} history={history_rows}/{total_rows} unique_codes={len(codes)}"
+    )
 
 
 if __name__ == "__main__":
