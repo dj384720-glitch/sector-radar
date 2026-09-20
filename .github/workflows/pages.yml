@@ -37,6 +37,7 @@ jobs:
           python scripts/add_radar_v15.py
           python scripts/add_radar_v20.py
           python scripts/add_research_terminal.py
+          python scripts/add_theme_ui.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
