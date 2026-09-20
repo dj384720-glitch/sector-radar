@@ -3,8 +3,9 @@
 
 The base builder keeps payloads small by mixing daily/weekly/monthly points. This
 post-processing step fetches roughly 11 years of DAILY Tencent K-line data in
-small date windows, so users can inspect the chart at each trading day. If a
-symbol cannot be refreshed, its existing history is preserved.
+small date windows, so users can inspect the chart at each trading day. For
+symbols where the dated Tencent endpoint is unavailable, reuse the base pipeline
+fallback (notably Sina for Beijing-market symbols and very new ETFs).
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from pathlib import Path
 import json
 import re
 
-from update_data import PERIODS, calc_returns, http_json, parse_tencent_rows, shift_months
+from update_data import PERIODS, calc_returns, fetch_series, http_json, parse_tencent_rows, shift_months
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "docs" / "data" / "latest.json"
@@ -25,7 +26,6 @@ def add_months(d: date, months: int) -> date:
     total = d.year * 12 + d.month - 1 + months
     y, m0 = divmod(total, 12)
     m = m0 + 1
-    # day=1 is sufficient for window boundaries and avoids month-end issues.
     return date(y, m, 1)
 
 
@@ -59,10 +59,18 @@ def fetch_daily(code: str) -> list[tuple[date, float]]:
             if d >= start:
                 points[d] = close
         cursor = next_cursor
+
     out = sorted(points.items())
-    if len(out) < 20:
+    if len(out) >= 2:
+        return out
+
+    # Fallback for very new ETFs and Beijing-market symbols. The main pipeline
+    # may reach Tencent's undated endpoint or Sina daily K-lines successfully.
+    fallback, _source = fetch_series(code)
+    fallback = [(d, c) for d, c in fallback if d >= start]
+    if len(fallback) < 2:
         raise RuntimeError("daily history unavailable")
-    return out
+    return fallback
 
 
 def main() -> None:
@@ -85,7 +93,7 @@ def main() -> None:
     for item in sectors:
         code = str(item.get("code") or "")
         result = fetched.get(code)
-        if not isinstance(result, list) or len(result) < 20:
+        if not isinstance(result, list) or len(result) < 2:
             continue
         item["history"] = [[d.isoformat(), round(c, 6)] for d, c in result]
         item["history_resolution"] = "daily"
