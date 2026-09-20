@@ -30,6 +30,7 @@ jobs:
           python scripts/add_us_indices.py
           python scripts/add_daily_history.py
           python scripts/add_sector_funds.py
+          python scripts/add_fund_ui.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
