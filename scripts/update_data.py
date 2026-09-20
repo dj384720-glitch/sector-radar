@@ -49,6 +49,10 @@ DIRECT = {
     "人工智能": ("sh515070", "人工智能ETF", "ETF代理"),
     "云计算": ("sh516510", "云计算ETF", "ETF代理"),
     "房地产": ("sz159768", "房地产ETF", "ETF代理"),
+    "海外医药": ("sh513060", "恒生医疗ETF博时", "ETF代理"),
+    "白酒": ("sh512690", "酒ETF鹏华", "ETF代理"),
+    "油气资源": ("sz159697", "油气ETF", "ETF代理"),
+    "汽车整车": ("sh516110", "汽车ETF国泰", "ETF代理"),
     "红利": ("sh000922", "中证红利指数", "指数"),
     "沪深300": ("sh000300", "沪深300指数", "指数"),
     "中证500": ("sh000905", "中证500指数", "指数"),
@@ -369,6 +373,32 @@ def fetch_yahoo_series(symbol: str) -> list[tuple[date, float]]:
     return out
 
 
+def fetch_sina_series(symbol: str) -> list[tuple[date, float]]:
+    url = "https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?" + urllib.parse.urlencode({
+        "symbol": symbol,
+        "scale": "240",
+        "ma": "no",
+        "datalen": "1023",
+    })
+    payload = http_json(url, timeout=9, retries=2)
+    if not isinstance(payload, list):
+        raise RuntimeError("Sina K线响应异常")
+    out = []
+    for row in payload:
+        try:
+            day = str(row.get("day") or "").split(" ", 1)[0]
+            d = datetime.strptime(day, "%Y-%m-%d").date()
+            c = float(row.get("close"))
+        except Exception:
+            continue
+        if math.isfinite(c) and c > 0:
+            out.append((d, c))
+    out.sort(key=lambda x: x[0])
+    if len(out) < 2:
+        raise RuntimeError("Sina K线无有效数据")
+    return out
+
+
 def fetch_series(resolved: dict) -> tuple[list[tuple[date, float]], str]:
     errors = []
     if resolved.get("provider") == "tencent":
@@ -383,6 +413,11 @@ def fetch_series(resolved: dict) -> tuple[list[tuple[date, float]], str]:
                 return fetch_yahoo_series(symbol), "Yahoo Finance公开行情（腾讯失败后回退）"
             except Exception as exc:
                 errors.append(f"Yahoo: {exc}")
+        if code.startswith("bj"):
+            try:
+                return fetch_sina_series(code), "新浪财经公开K线（腾讯/Yahoo失败后回退）"
+            except Exception as exc:
+                errors.append(f"Sina: {exc}")
     elif resolved.get("provider") == "yahoo":
         try:
             return fetch_yahoo_series(resolved["symbol"]), "Yahoo Finance公开行情"
