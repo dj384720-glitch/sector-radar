@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   deploy:
-    timeout-minutes: 12
+    timeout-minutes: 18
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -29,11 +29,14 @@ jobs:
           python scripts/update_data.py
           python scripts/add_us_indices.py
           python scripts/add_daily_history.py
+          python scripts/upgrade_benchmarks.py
           python scripts/add_sector_funds.py
           python scripts/repair_fund_history.py
+          python scripts/add_etf_metadata.py
           python scripts/add_fund_ui.py
           python scripts/add_radar_v15.py
           python scripts/add_radar_v20.py
+          python scripts/add_research_terminal.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
