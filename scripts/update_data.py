@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Fetch public market/sector history and build the JSON consumed by GitHub Pages.
+"""Build docs/data/latest.json from public Eastmoney market data.
 
-Data source: Eastmoney public quote endpoints (no API key required).
-The script prefers Eastmoney concept/industry boards for thematic sectors and
-uses explicit market indices where the repository configuration supplies them.
-
-If a series does not have enough history for a requested horizon, that horizon
-is left blank rather than extrapolated.
+The job is intentionally time-bounded: network failures should produce partial
+data and still let GitHub Pages deploy instead of leaving an older page live.
 """
 from __future__ import annotations
 
 from bisect import bisect_right
 from calendar import monthrange
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import json
 import math
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,27 +22,8 @@ CONFIG_PATH = ROOT / "data" / "sectors.json"
 OUT_DIR = ROOT / "docs" / "data"
 OUT_PATH = OUT_DIR / "latest.json"
 
-UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
-SUGGEST_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8"
-KLINE_HOSTS = [
-    "https://push2his.eastmoney.com",
-    "https://91.push2his.eastmoney.com",
-    "https://7.push2his.eastmoney.com",
-    "https://33.push2his.eastmoney.com",
-]
-CONCEPT_HOSTS = [
-    "https://79.push2.eastmoney.com",
-    "https://17.push2.eastmoney.com",
-    "https://push2.eastmoney.com",
-]
-INDUSTRY_HOSTS = [
-    "https://17.push2.eastmoney.com",
-    "https://79.push2.eastmoney.com",
-    "https://push2.eastmoney.com",
-]
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
+TOKEN = "D43BF722C8E33BDC906FB84D85E326E8"
 
 PERIODS = [
     ("近10年", ("years", 10)),
@@ -60,7 +37,7 @@ PERIODS = [
 ]
 
 
-def http_json(url: str, params: dict[str, str] | None = None, retries: int = 3) -> dict:
+def http_json(url: str, params: dict[str, str] | None = None, timeout: float = 5.0) -> dict:
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(
@@ -71,48 +48,33 @@ def http_json(url: str, params: dict[str, str] | None = None, retries: int = 3) 
             "Referer": "https://quote.eastmoney.com/",
         },
     )
-    last_err: Exception | None = None
-    for attempt in range(retries):
-        try:
-            with urllib.request.urlopen(req, timeout=18) as resp:
-                raw = resp.read()
-            return json.loads(raw.decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-            last_err = exc
-            if attempt + 1 < retries:
-                time.sleep(0.7 * (attempt + 1))
-    raise RuntimeError(f"request failed: {last_err}")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
-def fetch_paginated_board_catalog(kind: str) -> list[dict]:
-    if kind == "concept":
-        hosts = CONCEPT_HOSTS
-        fs = "m:90 t:3 f:!50"
-    else:
-        hosts = INDUSTRY_HOSTS
-        fs = "m:90 t:2 f:!50"
+def normalize(text: str) -> str:
+    return (
+        str(text).strip().lower()
+        .replace(" ", "").replace("-", "").replace("_", "")
+        .replace("（", "(").replace("）", ")")
+        .replace("概念", "").replace("板块", "").replace("行业", "")
+    )
 
+
+def fetch_board_catalog(kind: str) -> list[dict]:
+    fs = "m:90 t:3 f:!50" if kind == "concept" else "m:90 t:2 f:!50"
+    hosts = ["https://79.push2.eastmoney.com", "https://17.push2.eastmoney.com"]
     params = {
-        "pn": "1",
-        "pz": "100",
-        "po": "1",
-        "np": "1",
+        "pn": "1", "pz": "100", "po": "1", "np": "1",
         "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-        "fltt": "2",
-        "invt": "2",
-        "fid": "f12",
-        "fs": fs,
-        "fields": "f12,f14",
+        "fltt": "2", "invt": "2", "fid": "f12", "fs": fs, "fields": "f12,f14",
     }
-
-    last_error: Exception | None = None
     for host in hosts:
         try:
             rows: list[dict] = []
-            page = 1
-            while True:
+            for page in range(1, 8):
                 params["pn"] = str(page)
-                payload = http_json(f"{host}/api/qt/clist/get", params)
+                payload = http_json(f"{host}/api/qt/clist/get", params, timeout=4.0)
                 data = payload.get("data") or {}
                 diff = data.get("diff") or []
                 if isinstance(diff, dict):
@@ -120,137 +82,91 @@ def fetch_paginated_board_catalog(kind: str) -> list[dict]:
                 if not diff:
                     break
                 for item in diff:
-                    code = str(item.get("f12", "")).strip()
-                    name = str(item.get("f14", "")).strip()
+                    code, name = str(item.get("f12", "")).strip(), str(item.get("f14", "")).strip()
                     if code and name:
-                        rows.append(
-                            {
-                                "code": code,
-                                "name": name,
-                                "secid": f"90.{code}",
-                                "kind": kind,
-                            }
-                        )
+                        rows.append({"code": code, "name": name, "secid": f"90.{code}", "kind": kind})
                 total = int(data.get("total") or 0)
-                if len(rows) >= total or len(diff) < int(params["pz"]):
+                if (total and len(rows) >= total) or len(diff) < int(params["pz"]):
                     break
-                page += 1
-                if page > 20:
-                    break
-                time.sleep(0.08)
             if rows:
                 return rows
         except Exception as exc:
-            last_error = exc
-    if last_error:
-        print(f"[warn] {kind} board catalog unavailable: {last_error}")
+            print(f"[warn] {kind} catalog {host}: {exc}")
     return []
 
 
-def normalize(text: str) -> str:
-    return (
-        str(text)
-        .strip()
-        .lower()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("_", "")
-        .replace("（", "(")
-        .replace("）", ")")
-        .replace("概念", "")
-        .replace("板块", "")
-        .replace("行业", "")
-    )
-
-
 def resolve_board(entry: dict, catalog: list[dict]) -> dict | None:
-    aliases = entry.get("aliases") or [entry["name"]]
-    aliases = [str(x) for x in aliases if str(x).strip()]
+    aliases = [str(x) for x in (entry.get("aliases") or [entry["name"]]) if str(x).strip()]
     prefer = entry.get("prefer")
-
-    candidates: list[tuple[int, dict]] = []
+    best: tuple[int, dict] | None = None
     for row in catalog:
         rn = normalize(row["name"])
         for i, alias in enumerate(aliases):
             an = normalize(alias)
+            score = -1
             if rn == an:
                 score = 100 - i
-                if prefer and row["kind"] == prefer:
-                    score += 10
-                candidates.append((score, row))
-    if candidates:
-        return max(candidates, key=lambda x: x[0])[1]
-
-    for row in catalog:
-        rn = normalize(row["name"])
-        for i, alias in enumerate(aliases):
-            an = normalize(alias)
-            if len(an) >= 2 and (an in rn or rn in an):
+            elif len(an) >= 2 and (an in rn or rn in an):
                 score = 60 - i
-                if prefer and row["kind"] == prefer:
-                    score += 10
-                candidates.append((score, row))
-    if candidates:
-        return max(candidates, key=lambda x: x[0])[1]
-    return None
+            if score >= 0 and prefer and row["kind"] == prefer:
+                score += 10
+            if score >= 0 and (best is None or score > best[0]):
+                best = (score, row)
+    return best[1] if best else None
 
 
-def search_security(query: str) -> list[dict]:
-    payload = http_json(
-        "https://searchapi.eastmoney.com/api/suggest/get",
-        {
-            "input": query,
-            "type": "14",
-            "token": SUGGEST_TOKEN,
-            "count": "20",
-        },
-    )
-    data = (payload.get("QuotationCodeTable") or {}).get("Data") or []
-    out = []
-    for row in data:
-        quote_id = str(row.get("QuoteID") or "").strip()
-        code = str(row.get("Code") or "").strip()
-        name = str(row.get("Name") or "").strip()
-        if quote_id and code and name:
-            out.append(
-                {
-                    "secid": quote_id,
-                    "code": code,
-                    "name": name,
-                    "kind": "security",
-                }
-            )
-    return out
-
-
-def resolve_security(entry: dict) -> dict | None:
+def direct_security(entry: dict) -> dict | None:
     if entry.get("secid"):
         return {
             "secid": str(entry["secid"]),
-            "code": str(entry.get("benchmark") or entry["secid"].split(".", 1)[-1]),
+            "code": str(entry.get("benchmark") or str(entry["secid"]).split(".", 1)[-1]),
             "name": str(entry.get("benchmark_name") or entry["name"]),
             "kind": "security",
         }
+    queries = [str(x) for x in (entry.get("queries") or []) if str(x).strip()]
+    if queries:
+        q = queries[0]
+        if q.isdigit() and len(q) == 6:
+            market = "0" if q.startswith("399") or q.startswith("899") else "1"
+            return {"secid": f"{market}.{q}", "code": q, "name": entry["name"], "kind": "security"}
+    return None
 
-    queries = entry.get("queries") or [entry.get("benchmark"), entry["name"]]
-    queries = [str(q) for q in queries if q and str(q) != "待绑定"]
-    for query in queries:
+
+def search_security(entry: dict) -> dict | None:
+    direct = direct_security(entry)
+    if direct:
+        return direct
+    queries = [str(x) for x in (entry.get("queries") or [entry["name"]]) if str(x).strip()]
+    for query in queries[:2]:
         try:
-            rows = search_security(query)
+            payload = http_json(
+                "https://searchapi.eastmoney.com/api/suggest/get",
+                {"input": query, "type": "14", "token": TOKEN, "count": "10"},
+                timeout=4.0,
+            )
+            rows = (payload.get("QuotationCodeTable") or {}).get("Data") or []
+            if not rows:
+                continue
+            qn = normalize(query)
+            candidates = []
+            for row in rows:
+                secid = str(row.get("QuoteID") or "").strip()
+                code = str(row.get("Code") or "").strip()
+                name = str(row.get("Name") or "").strip()
+                if not (secid and code and name):
+                    continue
+                score = 0
+                if code.lower() == query.lower():
+                    score += 100
+                if normalize(name) == qn:
+                    score += 90
+                if secid.startswith("90."):
+                    score -= 30
+                candidates.append((score, {"secid": secid, "code": code, "name": name, "kind": "security"}))
+            if candidates:
+                return max(candidates, key=lambda x: x[0])[1]
         except Exception as exc:
-            print(f"[warn] search failed for {entry['name']} / {query}: {exc}")
-            continue
-        if not rows:
-            continue
-        qn = normalize(query)
-
-        def rank(row: dict) -> tuple[int, int]:
-            code_exact = int(str(row["code"]).lower() == str(query).lower())
-            name_exact = int(normalize(row["name"]) == qn)
-            is_board = int(str(row["secid"]).startswith("90."))
-            return (code_exact * 100 + name_exact * 90 - is_board * 30, -len(row["name"]))
-
-        return max(rows, key=rank)
+            print(f"[warn] search {entry['name']} / {query}: {exc}")
     return None
 
 
@@ -259,54 +175,45 @@ def fetch_kline(secid: str) -> tuple[str, list[tuple[date, float]]]:
         "secid": secid,
         "fields1": "f1,f2,f3,f4,f5,f6",
         "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-        "klt": "101",
-        "fqt": "1",
-        "beg": "20000101",
-        "end": "20500101",
-        "smplmt": "10000",
-        "lmt": "1000000",
+        "klt": "101", "fqt": "0", "beg": "20000101", "end": "20500101",
+        "smplmt": "10000", "lmt": "1000000",
     }
-    last_error: Exception | None = None
-    for fqt in ("1", "0"):
-        params["fqt"] = fqt
-        for host in KLINE_HOSTS:
-            try:
-                payload = http_json(f"{host}/api/qt/stock/kline/get", params, retries=2)
-                data = payload.get("data")
-                if not isinstance(data, dict):
-                    raise RuntimeError(payload.get("msg") or payload.get("dsc") or "empty data")
-                klines = data.get("klines") or []
-                if not klines:
-                    raise RuntimeError("empty klines")
-                points: list[tuple[date, float]] = []
-                for line in klines:
-                    parts = str(line).split(",")
-                    if len(parts) < 3:
-                        continue
-                    try:
-                        d = datetime.strptime(parts[0], "%Y-%m-%d").date()
-                        close = float(parts[2])
-                    except (ValueError, TypeError):
-                        continue
-                    if math.isfinite(close) and close > 0:
-                        points.append((d, close))
-                if not points:
-                    raise RuntimeError("no valid close prices")
-                points.sort(key=lambda x: x[0])
-                name = str(data.get("name") or "").strip()
-                return name, points
-            except Exception as exc:
-                last_error = exc
-                time.sleep(0.15)
-    raise RuntimeError(f"kline unavailable for {secid}: {last_error}")
+    last: Exception | None = None
+    for host in ("https://push2his.eastmoney.com", "https://91.push2his.eastmoney.com"):
+        try:
+            payload = http_json(f"{host}/api/qt/stock/kline/get", params, timeout=6.0)
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise RuntimeError("empty data")
+            lines = data.get("klines") or []
+            if not lines:
+                raise RuntimeError("empty klines")
+            points: list[tuple[date, float]] = []
+            for line in lines:
+                p = str(line).split(",")
+                if len(p) < 3:
+                    continue
+                try:
+                    d = datetime.strptime(p[0], "%Y-%m-%d").date()
+                    close = float(p[2])
+                except (ValueError, TypeError):
+                    continue
+                if math.isfinite(close) and close > 0:
+                    points.append((d, close))
+            if not points:
+                raise RuntimeError("no valid close")
+            points.sort(key=lambda x: x[0])
+            return str(data.get("name") or "").strip(), points
+        except Exception as exc:
+            last = exc
+    raise RuntimeError(str(last or "kline unavailable"))
 
 
 def shift_months(d: date, months: int) -> date:
-    total = d.year * 12 + (d.month - 1) - months
+    total = d.year * 12 + d.month - 1 - months
     y, m0 = divmod(total, 12)
     m = m0 + 1
-    day = min(d.day, monthrange(y, m)[1])
-    return date(y, m, day)
+    return date(y, m, min(d.day, monthrange(y, m)[1]))
 
 
 def target_date(latest: date, spec: tuple[str, int]) -> date:
@@ -315,13 +222,11 @@ def target_date(latest: date, spec: tuple[str, int]) -> date:
         return latest - timedelta(days=value)
     if unit == "months":
         return shift_months(latest, value)
-    if unit == "years":
-        return shift_months(latest, value * 12)
-    raise ValueError(unit)
+    return shift_months(latest, value * 12)
 
 
 def calc_returns(points: list[tuple[date, float]]) -> dict[str, float | None]:
-    dates = [d for d, _ in points]
+    dates = [x[0] for x in points]
     latest_date, latest_close = points[-1]
     result: dict[str, float | None] = {}
     for label, spec in PERIODS:
@@ -334,99 +239,102 @@ def calc_returns(points: list[tuple[date, float]]) -> dict[str, float | None]:
         if (target - old_date).days > 14:
             result[label] = None
             continue
-        result[label] = round((latest_close / old_close - 1.0) * 100.0, 2)
+        result[label] = round((latest_close / old_close - 1) * 100, 2)
     return result
 
 
-def build_item(entry: dict, catalog: list[dict], cache: dict[str, tuple[str, list[tuple[date, float]]]]) -> dict:
-    mode = entry.get("mode", "board")
-    resolved = resolve_board(entry, catalog) if mode == "board" else resolve_security(entry)
-    base = {
-        "name": entry["name"],
-        "benchmark": "暂无匹配",
-        "code": "",
-        "source": entry.get("source") or "东方财富公开行情",
-        "note": entry.get("note", ""),
-        "status": "unavailable",
-        "returns": {label: None for label, _ in PERIODS},
-        "latest_date": None,
-        "start_date": None,
-    }
-    if not resolved:
-        base["note"] = (base["note"] + "；" if base["note"] else "") + "未找到可自动匹配的公开行情"
-        return base
-
-    secid = resolved["secid"]
-    base["code"] = resolved["code"]
-    if resolved["kind"] in {"concept", "industry"}:
-        kind_cn = "概念板块" if resolved["kind"] == "concept" else "行业板块"
-        base["benchmark"] = f"{resolved['name']} ({resolved['code']})"
-        base["source"] = f"东方财富 · {kind_cn}"
-    else:
-        base["benchmark"] = f"{resolved['name']} ({resolved['code']})"
-        if entry.get("source"):
-            base["source"] = entry["source"]
-
-    try:
-        if secid not in cache:
-            cache[secid] = fetch_kline(secid)
-            time.sleep(0.12)
-        live_name, points = cache[secid]
-    except Exception as exc:
-        base["status"] = "error"
-        base["note"] = (base["note"] + "；" if base["note"] else "") + str(exc)
-        return base
-
-    if live_name and resolved["kind"] == "security":
-        base["benchmark"] = f"{live_name} ({resolved['code']})"
-
-    returns = calc_returns(points)
-    base["returns"] = returns
-    base["latest_date"] = points[-1][0].isoformat()
-    base["start_date"] = points[0][0].isoformat()
-    available = sum(v is not None for v in returns.values())
-    if available == len(PERIODS):
-        base["status"] = "ok"
-    elif available > 0:
-        base["status"] = "partial"
-    else:
-        base["status"] = "short_history"
-    return base
+def placeholder_benchmark(entry: dict) -> str:
+    if entry.get("benchmark_name"):
+        return str(entry["benchmark_name"])
+    if entry.get("aliases"):
+        return str(entry["aliases"][0])
+    if entry.get("queries"):
+        return str(entry["queries"][0])
+    return str(entry["name"])
 
 
 def main() -> None:
     sectors = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    concept = fetch_paginated_board_catalog("concept")
-    industry = fetch_paginated_board_catalog("industry")
-    catalog = concept + industry
-    print(f"[info] board catalog: concept={len(concept)}, industry={len(industry)}")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(fetch_board_catalog, "concept")
+        f2 = pool.submit(fetch_board_catalog, "industry")
+        catalog = f1.result() + f2.result()
+    print(f"[info] board catalog rows={len(catalog)}")
 
-    cache: dict[str, tuple[str, list[tuple[date, float]]]] = {}
-    output = []
-    for idx, entry in enumerate(sectors, 1):
-        item = build_item(entry, catalog, cache)
-        output.append(item)
-        print(
-            f"[{idx:02d}/{len(sectors)}] {entry['name']}: "
-            f"{item['benchmark']} / {item['status']} / {item['latest_date'] or '-'}"
-        )
+    resolved: list[tuple[dict, dict | None]] = []
+    for entry in sectors:
+        if entry.get("mode", "board") == "board":
+            r = resolve_board(entry, catalog)
+        else:
+            r = search_security(entry)
+        resolved.append((entry, r))
 
-    successful = sum(x["status"] in {"ok", "partial", "short_history"} for x in output)
-    full = sum(x["status"] == "ok" for x in output)
+    secids = sorted({r["secid"] for _, r in resolved if r})
+    market_data: dict[str, tuple[str, list[tuple[date, float]]] | Exception] = {}
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        jobs = {pool.submit(fetch_kline, secid): secid for secid in secids}
+        for fut in as_completed(jobs):
+            secid = jobs[fut]
+            try:
+                market_data[secid] = fut.result()
+                print(f"[ok] {secid}")
+            except Exception as exc:
+                market_data[secid] = exc
+                print(f"[warn] {secid}: {exc}")
+
+    items = []
+    for entry, r in resolved:
+        item = {
+            "name": entry["name"],
+            "benchmark": placeholder_benchmark(entry),
+            "code": "",
+            "source": entry.get("source") or "东方财富公开行情",
+            "note": entry.get("note", ""),
+            "status": "unavailable",
+            "returns": {label: None for label, _ in PERIODS},
+            "latest_date": None,
+            "start_date": None,
+        }
+        if not r:
+            item["note"] = (item["note"] + "；" if item["note"] else "") + "未自动匹配到可用公开行情"
+            items.append(item)
+            continue
+
+        item["code"] = r["code"]
+        if r["kind"] in {"concept", "industry"}:
+            item["benchmark"] = f"{r['name']} ({r['code']})"
+            item["source"] = "东方财富 · " + ("概念板块" if r["kind"] == "concept" else "行业板块")
+        else:
+            item["benchmark"] = f"{r['name']} ({r['code']})"
+
+        md = market_data.get(r["secid"])
+        if isinstance(md, Exception) or md is None:
+            item["status"] = "error"
+            item["note"] = (item["note"] + "；" if item["note"] else "") + "本次公开行情抓取失败"
+            items.append(item)
+            continue
+
+        live_name, points = md
+        if live_name and r["kind"] == "security":
+            item["benchmark"] = f"{live_name} ({r['code']})"
+        item["returns"] = calc_returns(points)
+        item["latest_date"] = points[-1][0].isoformat()
+        item["start_date"] = points[0][0].isoformat()
+        available = sum(v is not None for v in item["returns"].values())
+        item["status"] = "ok" if available == len(PERIODS) else ("partial" if available else "short_history")
+        items.append(item)
+
+    resolved_count = sum(x["status"] in {"ok", "partial", "short_history"} for x in items)
+    full_count = sum(x["status"] == "ok" for x in items)
     payload = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "status": "ok" if successful else "degraded",
-        "periods": [label for label, _ in PERIODS],
-        "summary": {
-            "total": len(output),
-            "resolved": successful,
-            "full_history": full,
-        },
-        "sectors": output,
+        "periods": [x[0] for x in PERIODS],
+        "summary": {"total": len(items), "resolved": resolved_count, "full_history": full_count},
+        "sectors": items,
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[info] wrote {OUT_PATH} ({successful}/{len(output)} resolved)")
+    print(f"[done] wrote {OUT_PATH}; resolved={resolved_count}/{len(items)}")
 
 
 if __name__ == "__main__":
