@@ -46,6 +46,7 @@ jobs:
           python scripts/add_favorites_watchlist.py
           python scripts/add_home_trend_chart.py
           python scripts/add_market_home.py
+          python scripts/add_home_radar_restore.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
