@@ -43,6 +43,7 @@ jobs:
           python scripts/add_navigation_home.py
           python scripts/add_nav_collapse.py
           python scripts/add_nav_manager.py
+          python scripts/add_favorites_watchlist.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
