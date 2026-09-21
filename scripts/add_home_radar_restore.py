@@ -49,8 +49,25 @@ renderHome=function(){
   if(typeof renderMarketRadar==='function') renderMarketRadar();
 };
 
-// A fresh page load must enter the exact same state as clicking “首页”.
-// Previously the default sector detail remained visible below the homepage until the user clicked 首页 once.
+// The base page finishes loading latest.json by calling renderDetail().
+// If the user has not navigated away from 首页, re-run the exact same 首页 action
+// after that first data-backed render so the initial page and a manual 首页 click match.
+let homeInitialDataSyncDone=false;
+const homeRadarBaseRenderDetail=renderDetail;
+renderDetail=function(){
+  const result=homeRadarBaseRenderDetail.apply(this,arguments);
+  if(!homeInitialDataSyncDone && typeof navPage!=='undefined' && navPage==='home' && Array.isArray(sectors) && sectors.length){
+    homeInitialDataSyncDone=true;
+    queueMicrotask(()=>{
+      if(typeof navPage!=='undefined' && navPage==='home' && typeof openNavPage==='function'){
+        openNavPage('home');
+      }
+    });
+  }
+  return result;
+};
+
+// A fresh page load starts in 首页 immediately, before data arrives.
 document.body.dataset.navPage='home';
 try{navPage='home'}catch(_e){}
 if(typeof applyNavVisibility==='function') applyNavVisibility();
@@ -78,7 +95,7 @@ def main():
     patch = f"\n<style>{CSS}</style>\n<script>{JS}</script>\n<!-- {MARKER} -->\n"
     text = text.replace("</body>", patch + "</body>", 1)
     INDEX.write_text(text, encoding="utf-8")
-    print("[done] homepage full-market rotation radar restored; homepage sector exclusions and initial-state fix applied")
+    print("[done] homepage fully synchronized after market data load")
 
 if __name__ == "__main__":
     main()
