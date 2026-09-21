@@ -42,6 +42,7 @@ jobs:
           sed -i 's|^<div class="mobile-select"><select id="mobileSector"></select></div>|    <div class="mobile-select"><select id="mobileSector"></select></div>|' docs/index.html
           python scripts/add_navigation_home.py
           python scripts/add_nav_collapse.py
+          python scripts/add_nav_manager.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
