@@ -9,6 +9,12 @@ MARKER = "HOME_MARKET_RADAR_RESTORE"
 CSS = r'''
 /* HOME_MARKET_RADAR_RESTORE */
 body[data-nav-page="home"] #marketRadarPanel{display:block!important}
+/* Before navigation JS finishes, keep sector/detail-only content from flashing below the homepage. */
+body:not([data-nav-page]) #sectorDirectoryPanel,
+body:not([data-nav-page]) #radarChangePanel,
+body:not([data-nav-page]) #researchHero,
+body:not([data-nav-page]) #etfTerminalPanel,
+body:not([data-nav-page]) .detail-workspace{display:none!important}
 '''
 
 JS = r'''
@@ -42,8 +48,21 @@ renderHome=function(){
   homeRadarBaseRenderHome();
   if(typeof renderMarketRadar==='function') renderMarketRadar();
 };
+
+// A fresh page load must enter the exact same state as clicking “首页”.
+// Previously the default sector detail remained visible below the homepage until the user clicked 首页 once.
+document.body.dataset.navPage='home';
+try{navPage='home'}catch(_e){}
+if(typeof applyNavVisibility==='function') applyNavVisibility();
+if(typeof buildMenu==='function') buildMenu();
+if(typeof renderMarketRadar==='function') renderMarketRadar();
+
 setTimeout(()=>{
-  if(typeof navPage!=='undefined'&&navPage==='home'&&typeof renderMarketRadar==='function') renderMarketRadar();
+  if(typeof navPage!=='undefined'&&navPage==='home'){
+    document.body.dataset.navPage='home';
+    if(typeof applyNavVisibility==='function') applyNavVisibility();
+    if(typeof renderMarketRadar==='function') renderMarketRadar();
+  }
 },0);
 '''
 
@@ -59,7 +78,7 @@ def main():
     patch = f"\n<style>{CSS}</style>\n<script>{JS}</script>\n<!-- {MARKER} -->\n"
     text = text.replace("</body>", patch + "</body>", 1)
     INDEX.write_text(text, encoding="utf-8")
-    print("[done] homepage full-market rotation radar restored; homepage sector exclusions applied")
+    print("[done] homepage full-market rotation radar restored; homepage sector exclusions and initial-state fix applied")
 
 if __name__ == "__main__":
     main()
