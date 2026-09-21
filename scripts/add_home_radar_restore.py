@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore the full-market rotation radar on the homepage."""
+"""Restore the full-market rotation radar and apply homepage-only visibility fixes."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +13,30 @@ body[data-nav-page="home"] #marketRadarPanel{display:block!important}
 
 JS = r'''
 // HOME_MARKET_RADAR_RESTORE
+const HOME_EXCLUDED_SECTOR='半导体材料设备';
+
+const homeRadarBaseMhSectorRows=mhSectorRows;
+mhSectorRows=function(){
+  return homeRadarBaseMhSectorRows().filter(x=>x?.s?.name!==HOME_EXCLUDED_SECTOR);
+};
+
+const homeRadarBaseMhDistributionValues=mhDistributionValues;
+mhDistributionValues=function(){
+  if(mhDistributionKind==='fund') return homeRadarBaseMhDistributionValues();
+  return (sectors||[])
+    .filter(x=>x?.name!==HOME_EXCLUDED_SECTOR)
+    .map(x=>mhDay(x))
+    .filter(Boolean);
+};
+
+const homeRadarBaseMhRenderFavoritesPreview=mhRenderFavoritesPreview;
+mhRenderFavoritesPreview=function(){
+  homeRadarBaseMhRenderFavoritesPreview();
+  document.querySelectorAll('#mhFavPreview [data-mh-fav]').forEach(el=>{
+    if(el.dataset.mhFav===HOME_EXCLUDED_SECTOR) el.remove();
+  });
+};
+
 const homeRadarBaseRenderHome=renderHome;
 renderHome=function(){
   homeRadarBaseRenderHome();
@@ -35,7 +59,7 @@ def main():
     patch = f"\n<style>{CSS}</style>\n<script>{JS}</script>\n<!-- {MARKER} -->\n"
     text = text.replace("</body>", patch + "</body>", 1)
     INDEX.write_text(text, encoding="utf-8")
-    print("[done] homepage full-market rotation radar restored")
+    print("[done] homepage full-market rotation radar restored; homepage sector exclusions applied")
 
 if __name__ == "__main__":
     main()
