@@ -1,0 +1,19 @@
+{
+  "updated_at": "2026-09-23T09:22:00+08:00",
+  "source": "近期公开公告 / 每日经济新闻备用快照",
+  "scope": "名称包含“纳斯达克/纳指/NASDAQ”的人民币场外基金份额；正式构建时由天天基金公开接口自动全量扫描",
+  "fallback": true,
+  "count": 9,
+  "fresh_count": 0,
+  "funds": [
+    {"code":"160213","name":"国泰纳斯达克100指数(QDII)","share_class":"-","status":"限大额","max_buy":100,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-22 报道","source_url":"https://fund.eastmoney.com/160213.html","stale":true,"note":"公告称2026-09-28起暂停申购"},
+    {"code":"270042","name":"广发纳斯达克100ETF联接人民币(QDII)A","share_class":"A","status":"暂停申购","max_buy":null,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-22 报道","source_url":"https://fund.eastmoney.com/270042.html","stale":true},
+    {"code":"006479","name":"广发纳斯达克100ETF联接人民币(QDII)C","share_class":"C","status":"暂停申购","max_buy":null,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"近期公开数据备用","source_url":"https://fund.eastmoney.com/006479.html","stale":true},
+    {"code":"018043","name":"天弘纳斯达克100指数发起(QDII)A","share_class":"A","status":"暂停申购","max_buy":null,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-22 报道","source_url":"https://fund.eastmoney.com/018043.html","stale":true},
+    {"code":"018044","name":"天弘纳斯达克100指数发起(QDII)C","share_class":"C","status":"暂停申购","max_buy":null,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-22 报道","source_url":"https://fund.eastmoney.com/018044.html","stale":true},
+    {"code":"018966","name":"汇添富纳斯达克100ETF发起式联接(QDII)人民币A","share_class":"A","status":"限大额","max_buy":10,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-22 报道","source_url":"https://fund.eastmoney.com/018966.html","stale":true},
+    {"code":"018967","name":"汇添富纳斯达克100ETF发起式联接(QDII)人民币C","share_class":"C","status":"限大额","max_buy":10,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-22 报道","source_url":"https://fund.eastmoney.com/018967.html","stale":true},
+    {"code":"019441","name":"万家纳斯达克100指数发起式(QDII)A","share_class":"A","status":"限大额","max_buy":100,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-09 报道","source_url":"https://fund.eastmoney.com/019441.html","stale":true},
+    {"code":"019442","name":"万家纳斯达克100指数发起式(QDII)C","share_class":"C","status":"限大额","max_buy":100,"min_buy":null,"min_dca":null,"redemption_status":"开放赎回","source":"每日经济新闻 2026-09-09 报道","source_url":"https://fund.eastmoney.com/019442.html","stale":true}
+  ]
+}

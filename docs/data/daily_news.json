@@ -1,0 +1,19 @@
+{
+  "updated_at": "2026-09-23T09:22:00+08:00",
+  "source": "每日经济新闻 / nbd.com.cn",
+  "source_note": "仅聚合《每日经济新闻》公开页面的标题、日期和原文链接，不复制正文。",
+  "categories": {
+    "科技": [
+      {"category":"科技","title":"盘后播报——科技板块表现较好","url":"https://www.nbd.com.cn/articles/2026-09-22/4588898.html","date":"2026-09-22","published_at":"2026-09-22T00:00:00+08:00","source":"每日经济新闻"}
+    ],
+    "医药": [
+      {"category":"医药","title":"2026年9月23日医药市场热点","url":"https://www.nbd.com.cn/articles/2026-09-22/4589412.html","date":"2026-09-22","published_at":"2026-09-22T00:00:00+08:00","source":"每日经济新闻"}
+    ],
+    "机器人": [
+      {"category":"机器人","title":"有企业人形机器人两年降价超七成，具身智能产业加速规模化","url":"https://www.nbd.com.cn/technology/","date":"2026-09-22","published_at":"2026-09-22T00:00:00+08:00","source":"每日经济新闻"}
+    ],
+    "煤炭": [
+      {"category":"煤炭","title":"煤炭板块热度再度升温，关注煤炭ETF（515220）","url":"https://m.nbd.com.cn/articles/2026-09-22/4588097.html","date":"2026-09-22","published_at":"2026-09-22T00:00:00+08:00","source":"每日经济新闻"}
+    ]
+  }
+}

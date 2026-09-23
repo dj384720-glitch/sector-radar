@@ -50,6 +50,7 @@ jobs:
           python scripts/add_market_home.py
           python scripts/add_home_radar_restore.py
           python scripts/add_news_nasdaq_ui.py
+          python scripts/add_nasdaq_returns_layout.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
