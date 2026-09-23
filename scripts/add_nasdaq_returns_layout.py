@@ -92,7 +92,7 @@ def main():
     if MARKER in text:
         print("[skip] Nasdaq returns/compact stats already installed")
         return
-    if "DAILY_NEWS_NASDAQ_LIMITS_UI" not in text:
+    if "NEWS_NASDAQ_LIMITS_UI" not in text:
         raise RuntimeError("news/Nasdaq limits UI must be installed first")
     if "</body>" not in text:
         raise RuntimeError("body marker missing")
