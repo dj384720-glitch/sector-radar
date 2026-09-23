@@ -117,13 +117,49 @@ def fetch_rate(entry: dict[str, str]) -> dict | None:
 
 
 def extract_js_array(body: str, name: str):
+    """Extract one JavaScript array assignment with bracket matching.
+
+    Eastmoney's accumulated-NAV series is an array of arrays, so a non-greedy
+    regular expression would stop at the first inner closing bracket.
+    """
     if not body:
         return None
-    m = re.search(rf"(?:var\s+)?{re.escape(name)}\s*=\s*(\[.*?\])\s*;", body, flags=re.S)
+    m = re.search(rf"(?:var\s+)?{re.escape(name)}\s*=\s*", body)
     if not m:
         return None
+    start = body.find("[", m.end())
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    quote = ""
+    end = -1
+    for i in range(start, len(body)):
+        ch = body[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                in_string = False
+            continue
+        if ch in {'"', "'"}:
+            in_string = True
+            quote = ch
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end <= start:
+        return None
     try:
-        return json.loads(m.group(1))
+        return json.loads(body[start:end])
     except Exception:
         return None
 
