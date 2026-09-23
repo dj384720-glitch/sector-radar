@@ -52,6 +52,7 @@ jobs:
           python scripts/add_news_nasdaq_ui.py
           python scripts/add_nasdaq_returns_layout.py
           python scripts/add_premium_polish.py
+          python scripts/fix_theme_settings_menu.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
