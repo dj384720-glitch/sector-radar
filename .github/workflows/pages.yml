@@ -33,6 +33,8 @@ jobs:
           python scripts/add_sector_funds.py
           python scripts/repair_fund_history.py
           python scripts/add_etf_metadata.py
+          python scripts/update_daily_news.py
+          python scripts/update_nasdaq_limits.py
           python scripts/add_fund_ui.py
           python scripts/add_radar_v15.py
           python scripts/add_radar_v20.py
@@ -47,6 +49,7 @@ jobs:
           python scripts/add_home_trend_chart.py
           python scripts/add_market_home.py
           python scripts/add_home_radar_restore.py
+          python scripts/add_news_nasdaq_ui.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
