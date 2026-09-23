@@ -1,0 +1,19 @@
+{
+  "updated_at": "2026-09-23T09:22:00+08:00",
+  "source": "每日经济新闻 / nbd.com.cn",
+  "fallback": true,
+  "categories": {
+    "科技": [
+      {"title": "盘后播报——科技板块表现较好", "url": "https://www.nbd.com.cn/articles/2026-09-22/4588898.html", "date": "2026-09-22"}
+    ],
+    "医药": [
+      {"title": "2026年9月23日医药市场热点", "url": "https://www.nbd.com.cn/articles/2026-09-22/4589412.html", "date": "2026-09-22"}
+    ],
+    "机器人": [
+      {"title": "每日经济新闻科技频道：机器人与具身智能最新报道", "url": "https://www.nbd.com.cn/technology/", "date": "2026-09-22"}
+    ],
+    "煤炭": [
+      {"title": "煤炭板块热度再度升温，关注煤炭ETF（515220）", "url": "https://m.nbd.com.cn/articles/2026-09-22/4588097.html", "date": "2026-09-22"}
+    ]
+  }
+}
