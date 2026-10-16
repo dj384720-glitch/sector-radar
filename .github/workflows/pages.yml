@@ -3,7 +3,10 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '30 9 * * 1-5'
+    # 15:45 China Standard Time, shortly after A-share market close.
+    - cron: '45 7 * * 1-5'
+    # 05:45 China Standard Time the following day, after the U.S. market close.
+    - cron: '45 21 * * 1-5'
   workflow_dispatch:
 permissions:
   contents: read
